@@ -58,6 +58,11 @@ main(const int argc,
          */
         const size_t bufsz = getpagesize();
         void *buf = valloc(bufsz);
+        if (!buf) {
+                int saved_errno = errno;
+                perror("cat");
+                return saved_errno;
+        }
 
         if (argc == 1) {
                 int error = cat(0, 1, buf, bufsz);
@@ -75,9 +80,12 @@ main(const int argc,
 
                 int error = cat(fd, 1, buf, bufsz);
                 if (error) {
+                        close(fd);
                         free(buf);
                         return error;
                 }
+
+                close(fd);
         }
 
         free(buf);
