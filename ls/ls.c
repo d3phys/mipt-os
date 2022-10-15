@@ -1,3 +1,5 @@
+#include <pwd.h>
+#include <grp.h>
 #include <fcntl.h>
 #include <assert.h>
 #include <stdio.h>
@@ -10,15 +12,16 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <dirent.h>
+#include <linux/limits.h>
 
 struct {
-        int long_listing : 1;
-        int directory : 1;
-        int all : 1;
-        int recursive : 1;
-        int inode : 1;
-        int numeric_uid_gid : 1;
-        int dir_head: 1;
+        unsigned long_listing : 1;
+        unsigned directory : 1;
+        unsigned all : 1;
+        unsigned recursive : 1;
+        unsigned inode : 1;
+        unsigned numeric_uid_gid : 1;
+        unsigned name_dir: 1;
 } opts = {0};
 
 const char *get_mode(mode_t mode)
@@ -37,6 +40,14 @@ const char *get_mode(mode_t mode)
         return smode;
 }
 
+const char *get_gid(gid_t gid)
+{
+        struct group *grp = getgrgid(gid);
+        if (grp)
+                return grp->gr_name;
+        return NULL;
+}
+
 void info(const struct stat *st, const char *path)
 {
         assert(st);
@@ -47,10 +58,12 @@ void info(const struct stat *st, const char *path)
                 return;
         }
 
-        printf("%s %s\n", get_mode(st->st_mode), path);
+        printf("%s ", get_mode(st->st_mode));
+        printf("%s ", get_gid(st->st_gid));
+        printf("%s\n", path);
 }
 
-int ls(const char *const path)
+int ls(char *const path)
 {
         assert(path);
 
@@ -61,57 +74,92 @@ int ls(const char *const path)
         };
 
         struct stat st;
-        if (stat(path, &st) == -1)
+        if (lstat(path, &st) == -1)
                 return TROUBLE;
 
-        if (S_ISDIR(st.st_mode)) {
-                DIR *dir = opendir(path);
+        /* We need to print newline between 'ls' calls */
+        static int indent = 0;
+        if (indent || (indent++))
+                putchar('\n');
 
-                const struct dirent *ent = NULL;
-                struct stat ent_st;
-
-                if (opts.dir_head)
-                        printf("%s:\n", path);
-
-                if (opts.long_listing)
-                        printf("total: xxx\n");
-
-                errno = 0;
-                while ((ent = readdir(dir))) {
-                        if (errno)
-                                return MINOR;
-
-                        if (!opts.all && (*ent->d_name == '.'))
-                                continue;
-
-                        if (stat(ent->d_name, &ent_st) == -1)
-                                return MINOR;
-
-                        info(&ent_st, ent->d_name);
-                }
-
-                while ((ent = readdir(dir))) {
-                        if (errno)
-                                return MINOR;
-
-                        if (!opts.all && (*ent->d_name == '.'))
-                                continue;
-
-                        if (stat(ent->d_name, &ent_st) == -1)
-                                return MINOR;
-
-                        info(&ent_st, ent->d_name);
-                }
-
-                closedir(dir);
-        } else {
+        if (!S_ISDIR(st.st_mode)) {
                 info(&st, path);
+                if (!opts.long_listing)
+                        putchar('\n');
+
+                return OK;
         }
 
-        printf("\n");
-        if (opts.dir_head)
+        /* 'ls' prints directory name if -R specified */
+        if (opts.name_dir | opts.recursive)
+                printf("%s:\n", path);
+
+        if (opts.long_listing)
+                printf("total: xxx\n");
+
+        const struct dirent *ent = NULL;
+        struct stat ent_st;
+
+        DIR *dir = opendir(path);
+        if (!dir) {
+                perror("");
+                return MINOR;
+        }
+
+        assert(dir);
+        strncat(path, "/", PATH_MAX - 1);
+        size_t path_len = strlen(path);
+
+        errno = 0;
+        while ((ent = readdir(dir))) {
+                assert(ent);
+                static int first = 0;
+                if (errno) {
+                        closedir(dir);
+                        return MINOR;
+                }
+
+                if (!opts.all && (*ent->d_name == '.'))
+                        continue;
+
+                strncat(path, ent->d_name, PATH_MAX - 1);
+                if (lstat(path, &ent_st) == -1) {
+                        path[path_len] = '\0';
+                        fprintf(stderr, "%s: %s\n", path, strerror(errno));
+                        continue;
+                }
+
+                info(&ent_st, ent->d_name);
+                path[path_len] = '\0';
+        }
+
+        if (!opts.long_listing)
                 printf("\n");
 
+        rewinddir(dir);
+
+        if (opts.recursive) {
+                while ((ent = readdir(dir))) {
+
+                        if (!strcmp(ent->d_name, "." ) ||
+                            !strcmp(ent->d_name, ".."))
+                                continue;
+
+                        strncat(path, ent->d_name, PATH_MAX - 1);
+                        if (lstat(path, &ent_st) == -1) {
+                                path[path_len] = '\0';
+                                fprintf(stderr, "%s: %s\n", path, strerror(errno));
+                                continue;
+                        }
+
+                        if (S_ISDIR(ent_st.st_mode))
+                                ls(path);
+
+                        path[path_len] = '\0';
+                }
+        }
+
+        closedir(dir);
         return OK;
 }
 
@@ -131,7 +179,8 @@ int main(int argc, char *argv[])
         };
 
         int opt = 0;
-        while ((opt = getopt_long(argc, argv, "ldRina", options, NULL)) != -1) {
+        /* Aldrin -- a toxic synthetic insecticide, now generally banned :D */
+        while ((opt = getopt_long(argc, argv, "aldRin", options, NULL)) != -1) {
 
                 switch(opt) {
                 case 'l':
@@ -153,17 +202,24 @@ int main(int argc, char *argv[])
                         opts.numeric_uid_gid = 1;
                         break;
                 default:
-                        assert(0 && "getopt_long wtf: what a terrible failure?");
                         break;
                 }
         }
 
+        /**
+         * Specific 'ls' behavior: print directory name
+         * if more than one argument exists.
+         */
         if ((argc - optind) > 1)
-                opts.dir_head = 1;
+                opts.name_dir = 1;
 
-        struct stat st = {0};
-        for (int i = optind; i < argc; i++)
-                ls(argv[i]);
+        dup2(1, 2);
+        char path[PATH_MAX] = {0};
+        for (int i = optind; i < argc; i++) {
+                /* Make path null terminated */
+                strncpy(path, argv[i], sizeof(path) - 1);
+                ls(path);
+        }
 
         return 0;
 }
