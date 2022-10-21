@@ -76,6 +76,10 @@ get_mode(mode_t mode)
  * According to perf stat 'getgrgid' and 'getpwuid'
  * runs incredibly slow.
  *
+ * That is why we need to use cache for this information.
+ * Original 'ls' and 'myls' comparation is shown below.
+ * They have _practically_ the same performance :)
+ *
  * Performance counter stats for 'ls /home -Rl' (5 runs):
  *
  *            397,40 msec task-clock:u              #    0,918 CPUs utilized            ( +-  0,70% )
