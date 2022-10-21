@@ -201,9 +201,6 @@ ls(char *const path)
         if (opts.name_dir | opts.recursive)
                 printf("%s:\n", path);
 
-        if (opts.long_listing)
-                printf("total: xxx\n");
-
         const struct dirent *ent = NULL;
         struct stat ent_st;
 
