@@ -3,6 +3,8 @@
 #include <fcntl.h>
 #include <assert.h>
 #include <stdio.h>
+#include <stdint.h>
+#include <time.h>
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
@@ -14,6 +16,10 @@
 #include <dirent.h>
 #include <linux/limits.h>
 
+/**
+ * It is bad idea to use bitfields here.
+ * But...
+ */
 struct {
         unsigned long_listing : 1;
         unsigned directory : 1;
@@ -24,31 +30,128 @@ struct {
         unsigned name_dir: 1;
 } opts = {0};
 
-const char *get_mode(mode_t mode)
+const char *
+get_time(time_t time)
 {
-        /**
-         * Do not touch!!!
-         */
-        static const char perm[] = "rwxrwxrwx";
-        static char smode[11] = {0};
+        static char date[0xff] = {0};
+        const struct tm *tm = localtime(&time);
 
-        smode[0] = S_ISDIR(mode) ? 'd' : '-';
+        const char *fmt = "%b %d %Y %H:%M";
+        strftime(date, sizeof(date), fmt, localtime(&time));
+        return date;
+}
 
-        for (int i = 1; i < 10; i++)
-                smode[i] = (1 << (9 - i)) ? perm[i] : '-';
+const char *
+get_mode(mode_t mode)
+{
+        /* Simple but effective and clean... */
+        static char smode[] = "drwxrwxrwx";
+
+        char *bit = smode;
+        *bit++ = S_ISDIR(mode) ? 'd' : '-';
+
+        *bit++ = (S_IRUSR & mode) ? 'r' : '-';
+        *bit++ = (S_IWUSR & mode) ? 'w' : '-';
+        *bit++ = (S_IXUSR & mode) ? 'x' : '-';
+
+        *bit++ = (S_IRGRP & mode) ? 'r' : '-';
+        *bit++ = (S_IWGRP & mode) ? 'w' : '-';
+        *bit++ = (S_IXGRP & mode) ? 'x' : '-';
+
+        *bit++ = (S_IROTH & mode) ? 'r' : '-';
+        *bit++ = (S_IWOTH & mode) ? 'w' : '-';
+        *bit++ = (S_IXOTH & mode) ? 'x' : '-';
 
         return smode;
 }
 
-const char *get_gid(gid_t gid)
+#define define_cache(__name, __type, __hash, __miss_func) \
+    struct __cache_##__name { \
+        __type data[1 << __hash];\
+    } cache_##__name;
+
+
+
+/**
+ * According to perf stat 'getgrgid' and 'getpwuid'
+ * runs incredibly slow.
+ *
+ * Performance counter stats for 'ls /home -Rl' (5 runs):
+ *
+ *            397,40 msec task-clock:u              #    0,918 CPUs utilized            ( +-  0,70% )
+ *                 0      context-switches:u        #    0,000 /sec
+ *                 0      cpu-migrations:u          #    0,000 /sec
+ *               419      page-faults:u             #    1,040 K/sec                    ( +-  0,18% )
+ *       562 704 860      cycles:u                  #    1,397 GHz                      ( +-  1,32% )
+ *     1 217 338 279      instructions:u            #    2,12  insn per cycle           ( +-  0,00% )
+ *       235 287 339      branches:u                #  583,992 M/sec                    ( +-  0,00% )
+ *         2 468 163      branch-misses:u           #    1,05% of all branches          ( +-  1,00% )
+ *
+ *           0,43269 +- 0,00216 seconds time elapsed  ( +-  0,50% )
+ *
+ *
+ * Performance counter stats for './myls /home -Rl' (5 runs):
+ *
+ *            477,34 msec task-clock:u              #    0,948 CPUs utilized            ( +-  0,91% )
+ *                 0      context-switches:u        #    0,000 /sec
+ *                 0      cpu-migrations:u          #    0,000 /sec
+ *               210      page-faults:u             #  443,166 /sec                     ( +-  0,38% )
+ *       399 541 759      cycles:u                  #    0,843 GHz                      ( +-  1,68% )
+ *       769 014 373      instructions:u            #    1,92  insn per cycle           ( +-  0,01% )
+ *       165 339 951      branches:u                #  348,919 M/sec                    ( +-  0,01% )
+ *           988 326      branch-misses:u           #    0,60% of all branches          ( +-  3,94% )
+ *
+ *           0,50354 +- 0,00421 seconds time elapsed  ( +-  0,84% )
+ */
+#define CACHED
+#define hash_bits 8
+struct entry {
+    uint64_t key;
+    void *value;
+};
+
+static struct entry groups [1 << hash_bits];
+static struct entry passwds[1 << hash_bits];
+
+void *get_cached(struct entry *cache, uint64_t key, void *(*miss)(uint64_t key))
 {
+    struct entry *ent = &cache[key & hash_bits];
+    if (key != ent->key) {
+        ent->value = miss(key);
+        ent->key = key;
+    }
+
+    return ent->value;
+}
+#undef hash_bits
+
+const char *
+get_gid(gid_t gid)
+{
+#ifdef CACHED
+        struct group *grp = (struct group *)get_cached(groups, gid, &getgrgid);
+#else
         struct group *grp = getgrgid(gid);
-        if (grp)
-                return grp->gr_name;
+#endif
+        if (grp) return grp->gr_name;
         return NULL;
 }
 
-void info(const struct stat *st, const char *path)
+const char *
+get_uid(uid_t uid)
+{
+#ifdef CACHED
+        struct passwd *pwd = (struct passwd *)get_cached(passwds, uid, &getpwuid);
+#else
+        struct passwd *pwd = getpwuid(uid);
+#endif
+        if (pwd)
+                return pwd->pw_name;
+        return NULL;
+}
+
+void
+info(const struct stat *st, const char *path)
 {
         assert(st);
         assert(path);
@@ -60,10 +163,14 @@ void info(const struct stat *st, const char *path)
 
         printf("%s ", get_mode(st->st_mode));
         printf("%s ", get_gid(st->st_gid));
+        printf("%s ", get_uid(st->st_uid));
+        printf("%9.ld ", st->st_size);
+        printf("%s ", get_time(st->st_mtime));
         printf("%s\n", path);
 }
 
-int ls(char *const path)
+int
+ls(char *const path)
 {
         assert(path);
 
@@ -138,11 +245,25 @@ int ls(char *const path)
 
         rewinddir(dir);
 
+        /**
+         * According to perf 'readdir' is not so efficient this way.
+         * Better way is to read once and then recursively travel.
+         *
+         * perf report:
+         *     15,36%  myls     libc.so.6             [.] readdir64
+         *     10,25%  myls     [unknown]             [k] 0xffffffffb5600191
+         *      8,77%  myls     libc.so.6             [.] _IO_file_xsputn
+         *
+         * But...
+         */
         if (opts.recursive) {
                 while ((ent = readdir(dir))) {
 
                         if (!strcmp(ent->d_name, "." ) ||
                             !strcmp(ent->d_name, ".."))
+                                continue;
+
+                        if (!opts.all && (*ent->d_name == '.'))
                                 continue;
 
                         strncat(path, ent->d_name, PATH_MAX - 1);
@@ -163,7 +284,8 @@ int ls(char *const path)
         return OK;
 }
 
-int main(int argc, char *argv[])
+int
+main(int argc, char *argv[])
 {
         /**
          * Redirect long options straight to the short options handlers
@@ -213,7 +335,6 @@ int main(int argc, char *argv[])
         if ((argc - optind) > 1)
                 opts.name_dir = 1;
 
-        dup2(1, 2);
         char path[PATH_MAX] = {0};
         for (int i = optind; i < argc; i++) {
                 /* Make path null terminated */
