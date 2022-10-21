@@ -17,7 +17,7 @@
 #include <linux/limits.h>
 
 /**
- * It is bad idea to use bitfields here.
+ * I have no idea why to use bitfields here :)
  * But...
  */
 struct {
@@ -64,13 +64,6 @@ get_mode(mode_t mode)
 
         return smode;
 }
-
-#define define_cache(__name, __type, __hash, __miss_func) \
-    struct __cache_##__name { \
-        __type data[1 << __hash];\
-    } cache_##__name;
-
-
 
 /**
  * According to perf stat 'getgrgid' and 'getpwuid'
@@ -345,5 +338,4 @@ main(int argc, char *argv[])
 
         return 0;
 }
-
 
