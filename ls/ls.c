@@ -112,7 +112,7 @@ static struct entry passwds[1 << hash_bits];
 
 void *get_cached(struct entry *cache, uint64_t key, void *(*miss)(uint64_t key))
 {
-    struct entry *ent = &cache[key & hash_bits];
+    struct entry *ent = &cache[key & ~((~0u) << hash_bits)];
     if (key != ent->key) {
         ent->value = miss(key);
         ent->key = key;
