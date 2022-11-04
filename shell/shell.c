@@ -155,9 +155,9 @@ int main(int argc, char *argv[])
         return free_cmds(cmds, n_cmds), EXIT_FAILURE;
 
     /* Setup pipes */
-    pipes[0][0] = 0;
-    pipes[n_pipes + 1][1] = 1;
-    for (size_t i = 1; i <= n_pipes; i++) {
+    //pipes[0][0] = 0;
+    //pipes[n_pipes + 1][1] = 1;
+    for (size_t i = 0; i < n_pipes; i++) {
         if (pipe(pipes[i]) == -1)
             return free(pipes), free_cmds(cmds, n_cmds), errno;
     }
@@ -167,16 +167,15 @@ int main(int argc, char *argv[])
         pid_t pid = fork();
         if (pid == 0) {
             /* Redirect the stdout to the write pipe */
-            if (dup2(pipes[i][0], 0) == -1)
+            if (i != 0 && dup2(pipes[i][0], 0) == -1)
                 return errno;
 
-            if (dup2(pipes[i + 1][1], 1) == -1)
+            if (i != n_pipes && dup2(pipes[i + 1][1], 1) == -1)
                 return errno;
 
-            close(pipes[i + 1][1]);
-            close(pipes[i][0]);
+            for (size_t i = 0; i < n_pipes; i++)
+                close(pipes[i][0]), close(pipes[i][1]);
 
-            fprintf(stderr, "IN pipe :%s \n", cmds[i].path);
             execvp(cmds[i].path, cmds[i].args);
             perror("in child");
             return ENOENT;
@@ -193,6 +192,7 @@ int main(int argc, char *argv[])
     for (size_t i = 0; i < n_cmds; i++)
         free(cmds[i].args);
     free(cmds);
+    free(pipes);
     return 0;
 
 
