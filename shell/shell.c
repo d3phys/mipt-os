@@ -8,6 +8,14 @@
 #include <sys/wait.h>
 #include <sys/time.h>
 
+void perror_s(const char *msg)
+{
+    assert(msg);
+    int saved_errno = errno;
+    perror(msg);
+    errno = saved_errno;
+}
+
 struct command {
     const char *path;
     char **args;
@@ -75,7 +83,6 @@ struct command *split_input(char *buf, const size_t kinput_sz, size_t *n_cmds)
 
     char *token = strtok(buf, "|");
     while (token) {
-//        puts(token);
         stack_push(&tokens, &token);
         token = strtok(NULL, "|");
     }
@@ -123,7 +130,7 @@ struct command *split_input(char *buf, const size_t kinput_sz, size_t *n_cmds)
 
 void free_cmds(struct command *cmds, size_t n_cmds)
 {
-    for (size_t i = 0; i < n_cmds; i++)
+    for (size_t i = 0; i != n_cmds; ++i)
         free(cmds[i].args);
     free(cmds);
 }
@@ -138,163 +145,72 @@ int main(int argc, char *argv[])
     if (!cmds)
         return fprintf(stderr, "split failed\n"), EXIT_FAILURE;
 
-    /*
+#ifdef DEBUG
     for (size_t i = 0; i < n_cmds; i++) {
         printf("path: %s\n", cmds[i].path);
         char **arg = cmds[i].args;
+        printf("args: ");
         do
             printf("%s ", *arg);
         while (*arg++);
+        printf("\n\n");
     }
-    printf("\n\n\n");
-    */
+#endif
+
+    if (!n_cmds)
+        return EXIT_SUCCESS;
 
     size_t n_pipes = n_cmds - 1;
-    int (*pipes)[2] = malloc((n_pipes + 2) * 2 * sizeof(int));
+    int (*pipes)[2] = malloc(n_pipes * 2 * sizeof(int));
     if (!pipes)
         return free_cmds(cmds, n_cmds), EXIT_FAILURE;
 
     /* Setup pipes */
-    //pipes[0][0] = 0;
-    //pipes[n_pipes + 1][1] = 1;
-    for (size_t i = 0; i < n_pipes; i++) {
+    for (size_t i = 0; i != n_pipes; ++i) {
         if (pipe(pipes[i]) == -1)
             return free(pipes), free_cmds(cmds, n_cmds), errno;
     }
 
     for (size_t i = 0; i < n_cmds; i++) {
-
         pid_t pid = fork();
         if (pid == 0) {
-            /* Redirect the stdout to the write pipe */
-            if (i != 0 && dup2(pipes[i][0], 0) == -1)
-                return errno;
+            /* Redirect stdin to the prev read */
+            if (i != 0) {
+                if (dup2(pipes[i - 1][0], 0) == -1)
+                    return perror_s("write dup2 fail"), errno;
+            }
 
-            if (i != n_pipes && dup2(pipes[i + 1][1], 1) == -1)
-                return errno;
+            /* Redirect stdout to the next write */
+            if (i < (n_cmds - 1)) {
+                if (dup2(pipes[i][1], 1) == -1)
+                    return perror_s("read dup2 fail"), errno;
+            }
 
-            for (size_t i = 0; i < n_pipes; i++)
-                close(pipes[i][0]), close(pipes[i][1]);
+            /* Close other pipes */
+            for (size_t j = 0; j != n_pipes; ++j)
+                close(pipes[j][0]), close(pipes[j][1]);
 
             execvp(cmds[i].path, cmds[i].args);
-            perror("in child");
+            perror_s("in child");
             return ENOENT;
         }
+
     }
 
+    /* Close other pipes in grandpa */
+    for (size_t j = 0; j != n_pipes; ++j)
+        close(pipes[j][0]), close(pipes[j][1]);
+
     int status = 0;
-    wait(&status);
+    for (size_t i = 0; i != n_cmds; ++i) {
+      wait(&status);
+      status = WEXITSTATUS(status);
+      if (status == ENOENT)
+          return perror_s("wait status"), status;
+    }
 
-    status = WEXITSTATUS(status);
-    if (status == ENOENT)
-            return status;
-
-    for (size_t i = 0; i < n_cmds; i++)
-        free(cmds[i].args);
-    free(cmds);
+    free_cmds(cmds, n_cmds);
     free(pipes);
-    return 0;
 
-
-#if 0
-        for (int i = 0; i < n_pipes; i++) {
-                /* Prepare pipe */
-                int fds[2];
-                if (pipe(fds) == -1)
-                        return errno;
-
-                pid_t pid = fork();
-                if (pid == 0) {
-                        /* Redirect the stdout to the write pipe */
-                        if (dup2(fds[0], 0) == -1)
-                                return errno;
-
-                        if (dup2(fds[1], 1) == -1)
-                                return errno;
-
-                        close(fds[1]);
-                        close(fds[0]);
-
-                        execvp(*argv, argv);
-                        perror("");
-                        return ENOENT;
-                }
-        }
-
-        /* Prepare pipe */
-        int fds[2];
-        if (pipe(fds) == -1)
-                return errno;
-
-        pid_t pid = fork();
-        if (pid == 0) {
-                /* Redirect the stdout to the write pipe */
-                if (dup2(fds[1], 1) == -1)
-                        return errno;
-
-                close(fds[1]);
-                close(fds[0]);
-
-                execvp(*argv, argv);
-                perror("");
-                return ENOENT;
-        }
-
-        close(fds[1]);
-
-        char buf[0xff] = {0};
-
-        ssize_t n_read = 0;
-
-        size_t lines = 0;
-        size_t words = 0;
-        size_t bytes = 0;
-
-        enum states {
-                WORD,
-                NOWORD,
-        };
-
-        int state = NOWORD;
-        do {
-                n_read = read(fds[0], buf, sizeof(buf));
-                for (size_t i = 0; i < n_read; i++) {
-
-                        if (buf[i] == '\n')
-                                lines++;
-
-                        switch (state) {
-                        case WORD:
-                                if (isspace(buf[i]))
-                                        state = NOWORD;
-                                break;
-                        case NOWORD:
-                                if (isspace(buf[i]))
-                                        continue;
-
-                                state = WORD;
-                                words++;
-                                break;
-                        default:
-                                assert(0);
-                        }
-                }
-
-                bytes += n_read;
-        } while (n_read);
-
-        int status = 0;
-        wait(&status);
-
-        status = WEXITSTATUS(status);
-        if (status == ENOENT)
-                return status;
-
-        close(fds[0]);
-
-        fprintf(stderr, "\t%ld\t%ld\t%ld\n", lines, words, bytes);
-#endif
-        return 0;
+    return EXIT_SUCCESS;
 }
-
-
