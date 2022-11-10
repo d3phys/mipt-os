@@ -56,6 +56,7 @@ size_t stack_push(struct stack *stk, void *elem)
 void *stack_extract(struct stack *stk)
 {
     assert(stk);
+
     void *newbies = realloc(stk->elems, stk->size * stk->elem_sz);
     if (!newbies)
         return fprintf(stderr, "stack_extract alloc failed\n"), NULL;
@@ -111,6 +112,9 @@ struct command *split_input(char *buf, const size_t kinput_sz, size_t *n_cmds)
             token = strtok(NULL, delim);
         }
 
+        if (args.size == 0)
+            break;
+
         char *null = NULL;
         stack_push(&args, &null);
 
@@ -135,82 +139,97 @@ void free_cmds(struct command *cmds, size_t n_cmds)
     free(cmds);
 }
 
+void invite()
+{
+    fprintf(stderr, "shell> ");
+}
+
 int main(int argc, char *argv[])
 {
     const size_t kinput_sz = 0xff;
     char buf[kinput_sz];
 
-    size_t n_cmds = 0;
-    struct command *cmds = (struct command *)split_input(buf, kinput_sz, &n_cmds);
-    if (!cmds)
-        return fprintf(stderr, "split failed\n"), EXIT_FAILURE;
+    for (;;) {
+        invite();
+        size_t n_cmds = 0;
+        struct command *cmds = (struct command *)split_input(buf, kinput_sz, &n_cmds);
+        if (!cmds)
+            return fprintf(stderr, "split failed\n"), EXIT_FAILURE;
 
 #ifdef DEBUG
-    for (size_t i = 0; i < n_cmds; i++) {
-        printf("path: %s\n", cmds[i].path);
-        char **arg = cmds[i].args;
-        printf("args: ");
-        do
-            printf("%s ", *arg);
-        while (*arg++);
-        printf("\n\n");
-    }
+        for (size_t i = 0; i < n_cmds; i++) {
+            printf("path: %s\n", cmds[i].path);
+            char **arg = cmds[i].args;
+            printf("args: ");
+            do
+                printf("%s ", *arg);
+            while (*arg++);
+            printf("\n\n");
+        }
 #endif
 
-    if (!n_cmds)
-        return EXIT_SUCCESS;
-
-    size_t n_pipes = n_cmds - 1;
-    int (*pipes)[2] = malloc(n_pipes * 2 * sizeof(int));
-    if (!pipes)
-        return free_cmds(cmds, n_cmds), EXIT_FAILURE;
-
-    /* Setup pipes */
-    for (size_t i = 0; i != n_pipes; ++i) {
-        if (pipe(pipes[i]) == -1)
-            return free(pipes), free_cmds(cmds, n_cmds), errno;
-    }
-
-    for (size_t i = 0; i < n_cmds; i++) {
-        pid_t pid = fork();
-        if (pid == 0) {
-            /* Redirect stdin to the prev read */
-            if (i != 0) {
-                if (dup2(pipes[i - 1][0], 0) == -1)
-                    return perror_s("write dup2 fail"), errno;
-            }
-
-            /* Redirect stdout to the next write */
-            if (i < (n_cmds - 1)) {
-                if (dup2(pipes[i][1], 1) == -1)
-                    return perror_s("read dup2 fail"), errno;
-            }
-
-            /* Close other pipes */
-            for (size_t j = 0; j != n_pipes; ++j)
-                close(pipes[j][0]), close(pipes[j][1]);
-
-            execvp(cmds[i].path, cmds[i].args);
-            perror_s("in child");
-            return ENOENT;
+        if (n_cmds == 0) {
+            free_cmds(cmds, n_cmds);
+            continue;
         }
 
+        size_t n_pipes = n_cmds - 1;
+        int (*pipes)[2] = malloc(n_pipes * 2 * sizeof(int));
+        if (!pipes)
+            return free_cmds(cmds, n_cmds), EXIT_FAILURE;
+
+        /* Setup pipes */
+        for (size_t i = 0; i != n_pipes; ++i) {
+            if (pipe(pipes[i]) == -1)
+                return free(pipes), free_cmds(cmds, n_cmds), errno;
+        }
+
+        if (n_cmds == 0) {
+            fprintf(stderr, "Zero commands\n");
+            free(pipes), free_cmds(cmds, n_cmds);
+            continue;
+        }
+
+        for (size_t i = 0; i < n_cmds; i++) {
+            pid_t pid = fork();
+            if (pid == 0) {
+                /* Redirect stdin to the prev read */
+                if (i != 0) {
+                    if (dup2(pipes[i - 1][0], 0) == -1)
+                        return perror_s("write dup2 fail"), errno;
+                }
+
+                /* Redirect stdout to the next write */
+                if (i < (n_cmds - 1)) {
+                    if (dup2(pipes[i][1], 1) == -1)
+                        return perror_s("read dup2 fail"), errno;
+                }
+
+                /* Close other pipes */
+                for (size_t j = 0; j != n_pipes; ++j)
+                    close(pipes[j][0]), close(pipes[j][1]);
+
+                execvp(cmds[i].path, cmds[i].args);
+                perror_s(cmds[i].path);
+                free_cmds(cmds, n_cmds);
+                free(pipes);
+                return ENOENT;
+            }
+        }
+
+        /* Close other pipes in grandpa */
+        for (size_t j = 0; j != n_pipes; ++j)
+            close(pipes[j][0]), close(pipes[j][1]);
+
+        int status = 0;
+        for (size_t i = 0; i != n_cmds; ++i) {
+            wait(&status);
+            status = WEXITSTATUS(status);
+        }
+
+        free_cmds(cmds, n_cmds);
+        free(pipes);
     }
-
-    /* Close other pipes in grandpa */
-    for (size_t j = 0; j != n_pipes; ++j)
-        close(pipes[j][0]), close(pipes[j][1]);
-
-    int status = 0;
-    for (size_t i = 0; i != n_cmds; ++i) {
-      wait(&status);
-      status = WEXITSTATUS(status);
-      if (status == ENOENT)
-          return perror_s("wait status"), status;
-    }
-
-    free_cmds(cmds, n_cmds);
-    free(pipes);
 
     return EXIT_SUCCESS;
 }
