@@ -240,10 +240,8 @@ cat(struct monitor *mon, int fd)
     };
 
     pthread_t tid_reader, tid_writer;
-    if(pthread_create(&tid_reader, NULL, load_reader, &reader_args))
-        fprintf(stderr, "READER CREATE FAILED\n");
-    if (pthread_create(&tid_writer, NULL, load_writer, &writer_args))
-        fprintf(stderr, "WRITER CREATE FAILED\n");
+    pthread_create(&tid_reader, NULL, load_reader, &reader_args);
+    pthread_create(&tid_writer, NULL, load_writer, &writer_args);
 
     void *ret = NULL;
     pthread_join(tid_reader, &ret);
