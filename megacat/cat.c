@@ -66,18 +66,6 @@ close_pipes_pair(struct pipes_pair *pp)
     close(pp->write[0]), close(pp->write[1]);
 }
 
-static bool
-are_bufs_clear(struct buffer *bufs,
-               int n_bufs)
-{
-    for (int i = 0; i != n_bufs; i++) {
-        if (bufs[i].size != 0)
-            return false;
-    }
-
-    return true;
-}
-
 int main(int argc,
          char *argv[])
 {
@@ -155,16 +143,14 @@ int main(int argc,
     if (bufs == NULL)
         return perror_s("Buffers calloc failed"), EXIT_FAILURE;
 
-    /*
-    for (int i = 0; i != n_fds;) {
-        fds[i++].events = POLLIN;
-        fds[i++].events = POLLOUT;
-    }
-    */
-
     for (;;) {
-
-        /* Setup pollfds _before_ poll call */
+        /**
+         * Setup pollfds _before_ poll call
+         *
+         * TODO: There is another (and more clever) way
+         * of ignoring file descriptor:
+         * We can make it negative fd = ~fd.
+         */
         for (int i = 0; i != n_fds;) {
             if (fds[i].fd == EOF)
                 continue;
@@ -220,7 +206,7 @@ int main(int argc,
         /**
          * We can not write or read in two cases:
          *
-         * 1. We have finished cat's chain run
+         * 1. We have finished cats chain run
          * 2. All data is stored inside cats internal buffers
          *
          * In the task megacat have to check cats endlessly.
