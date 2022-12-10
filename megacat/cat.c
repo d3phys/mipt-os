@@ -89,8 +89,7 @@ int main(int argc,
     if (fds == NULL)
         return perror_s("Calloc failed"), EXIT_FAILURE;
 
-    size_t n_pipes = 2 * n_cats;
-    struct pipes_pair *pairs = calloc(n_pipes, sizeof(struct pipes_pair *));
+    struct pipes_pair *pairs = calloc(n_cats, sizeof(struct pipes_pair));
     if (pairs == NULL)
         return perror_s("Calloc failed"), EXIT_FAILURE;
 
